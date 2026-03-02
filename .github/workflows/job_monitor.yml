@@ -42,7 +42,6 @@ jobs:
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
           ALERT_EMAIL: ${{ secrets.ALERT_EMAIL }}
           RESEND_FROM_EMAIL: ${{ secrets.RESEND_FROM_EMAIL }}
-          SOURCE_MODE: "companies"
           TOTAL_GROUPS: "3"
           GROUP_INDEX: ${{ matrix.group_index }}
           PAGE_GOTO_TIMEOUT_MS: "30000"

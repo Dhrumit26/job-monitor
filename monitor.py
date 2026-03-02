@@ -297,34 +297,6 @@ def load_companies(path: str) -> list[dict[str, str]]:
         return json.load(f)
 
 
-def is_tracker_source(company: dict[str, str]) -> bool:
-    name = (company.get("name") or "").lower()
-    url = (company.get("url") or "").lower()
-    name_keywords = ("tracker", "list", "feed", "board", "meta-source")
-    url_keywords = (
-        "simplify.jobs",
-        "github.com/simplifyjobs/new-grad-positions",
-        "jobright.ai",
-        "jobsfornewgrad.com",
-        "indeed.com",
-        "forbes.com/lists",
-        "greatplacetowork.com",
-        "linkedin.com/jobs/software-engineer-new-grad-jobs",
-    )
-    return any(keyword in name for keyword in name_keywords) or any(
-        keyword in url for keyword in url_keywords
-    )
-
-
-def filter_company_sources(companies: list[dict[str, str]]) -> list[dict[str, str]]:
-    source_mode = os.getenv("SOURCE_MODE", "all").strip().lower()
-    if source_mode == "companies":
-        return [company for company in companies if not is_tracker_source(company)]
-    if source_mode == "trackers":
-        return [company for company in companies if is_tracker_source(company)]
-    return companies
-
-
 def select_company_shard(companies: list[dict[str, str]]) -> list[dict[str, str]]:
     total_groups = max(1, int(os.getenv("TOTAL_GROUPS", "1")))
     group_index = int(os.getenv("GROUP_INDEX", "0"))
@@ -874,8 +846,7 @@ def main() -> None:
     script_dir = os.path.dirname(os.path.abspath(__file__))
     companies_path = os.path.join(script_dir, "companies.json")
     companies = load_companies(companies_path)
-    filtered_companies = filter_company_sources(companies)
-    shard_companies = select_company_shard(filtered_companies)
+    shard_companies = select_company_shard(companies)
 
     supabase = init_supabase()
     gemini_model = init_gemini()
@@ -886,11 +857,9 @@ def main() -> None:
 
     total_groups = max(1, int(os.getenv("TOTAL_GROUPS", "1")))
     group_index = int(os.getenv("GROUP_INDEX", "0"))
-    source_mode = os.getenv("SOURCE_MODE", "all").strip().lower()
     log(
-        f"🧩 Shard {group_index + 1}/{total_groups} ({source_mode}) active — "
-        f"{len(shard_companies)} of {len(filtered_companies)} selected sources "
-        f"({len(companies)} total in file)"
+        f"🧩 Shard {group_index + 1}/{total_groups} active — "
+        f"{len(shard_companies)} of {len(companies)} total sources"
     )
 
     scraped_count = 0
