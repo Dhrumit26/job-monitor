@@ -38,6 +38,8 @@ TARGET_SELECTORS = [
 
 JOB_LINK_KEYWORDS = ("job", "career", "position", "role", "opening")
 PAGE_GOTO_TIMEOUT_MS = int(os.getenv("PAGE_GOTO_TIMEOUT_MS", "30000"))
+MIN_DELAY_SECONDS = float(os.getenv("MIN_DELAY_SECONDS", "1"))
+MAX_DELAY_SECONDS = float(os.getenv("MAX_DELAY_SECONDS", "2"))
 DEFAULT_GEMINI_MODEL = "gemini-1.5-flash"
 GEMINI_FALLBACK_MODELS = [
     "gemini-1.5-flash",
@@ -99,6 +101,15 @@ def now_iso() -> str:
 def load_companies(path: str) -> list[dict[str, str]]:
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
+
+
+def select_company_shard(companies: list[dict[str, str]]) -> list[dict[str, str]]:
+    total_groups = max(1, int(os.getenv("TOTAL_GROUPS", "1")))
+    group_index = int(os.getenv("GROUP_INDEX", "0"))
+    if group_index < 0 or group_index >= total_groups:
+        log(f"⚠️ Invalid shard config GROUP_INDEX={group_index}, TOTAL_GROUPS={total_groups}; using all companies")
+        return companies
+    return [company for idx, company in enumerate(companies) if idx % total_groups == group_index]
 
 
 def init_supabase() -> Client | None:
@@ -353,16 +364,16 @@ If no early-career roles found, return exactly: []"""
         return [], True, "gemini"
 
 
-def is_new_job(supabase: Client | None, url: str) -> bool:
+def is_new_job(supabase: Client | None, url: str) -> bool | None:
     if supabase is None:
         log(f"❌ Supabase unavailable, skipping job check for {url}")
-        return False
+        return None
     try:
         response = supabase.table("seen_jobs").select("url").eq("url", url).limit(1).execute()
         return len(response.data or []) == 0
     except Exception as exc:
         log(f"❌ Supabase check failed for {url} ({exc})")
-        return False
+        return None
 
 
 def save_job(
@@ -412,7 +423,7 @@ def build_email_html(matches: list[dict[str, str]]) -> str:
         <div style="max-width:600px;margin:0 auto;padding:24px;">
           <h2 style="color:#111827;">New Early-Career Job Matches</h2>
           {''.join(cards)}
-          <p style="margin-top:20px;color:#6b7280;font-size:12px;">Job Monitor • Next scan in 4 hours</p>
+          <p style="margin-top:20px;color:#6b7280;font-size:12px;">Job Monitor • Next scan in 2 hours</p>
         </div>
       </body>
     </html>
@@ -450,11 +461,19 @@ def main() -> None:
     script_dir = os.path.dirname(os.path.abspath(__file__))
     companies_path = os.path.join(script_dir, "companies.json")
     companies = load_companies(companies_path)
+    shard_companies = select_company_shard(companies)
 
     supabase = init_supabase()
     model = init_gemini()
     resend_ready = init_resend()
     gemini_enabled = model is not None
+
+    total_groups = max(1, int(os.getenv("TOTAL_GROUPS", "1")))
+    group_index = int(os.getenv("GROUP_INDEX", "0"))
+    log(
+        f"🧩 Shard {group_index + 1}/{total_groups} active — "
+        f"{len(shard_companies)} of {len(companies)} companies assigned"
+    )
 
     scraped_count = 0
     blocked_count = 0
@@ -467,7 +486,7 @@ def main() -> None:
         context = browser.new_context()
         configure_stealth_context(context)
 
-        for company in companies:
+        for company in shard_companies:
             company_name = company.get("name", "Unknown")
             company_url = company.get("url", "")
             t0 = time.perf_counter()
@@ -487,7 +506,7 @@ def main() -> None:
                     blocked_count += 1
                     log(f"⚠️ {company_name} blocked — likely IP restriction, consider adding to manual list")
                 page.close()
-                time.sleep(random.uniform(2, 4))
+                time.sleep(random.uniform(MIN_DELAY_SECONDS, MAX_DELAY_SECONDS))
                 continue
             except Exception as exc:
                 reason = str(exc)
@@ -496,7 +515,7 @@ def main() -> None:
                     blocked_count += 1
                     log(f"⚠️ {company_name} blocked — likely IP restriction, consider adding to manual list")
                 page.close()
-                time.sleep(random.uniform(2, 4))
+                time.sleep(random.uniform(MIN_DELAY_SECONDS, MAX_DELAY_SECONDS))
                 continue
 
             ai_matches, gemini_enabled, filter_mode = gemini_filter_jobs(
@@ -510,7 +529,11 @@ def main() -> None:
                 title = match["title"]
                 url = match["url"]
 
-                if not is_new_job(supabase, url):
+                is_new = is_new_job(supabase, url)
+                if is_new is None:
+                    log(f"⏭  SKIP (db error): {title} @ {company_name}")
+                    continue
+                if not is_new:
                     log(f"⏭  SKIP (seen): {title} @ {company_name}")
                     continue
 
@@ -530,7 +553,7 @@ def main() -> None:
                 log(f"✅ NEW: {title} @ {company_name}")
 
             page.close()
-            time.sleep(random.uniform(2, 4))
+            time.sleep(random.uniform(MIN_DELAY_SECONDS, MAX_DELAY_SECONDS))
 
         browser.close()
 
