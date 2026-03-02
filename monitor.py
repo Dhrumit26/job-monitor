@@ -43,6 +43,8 @@ MAX_SCRAPE_RETRIES = int(os.getenv("MAX_SCRAPE_RETRIES", "1"))
 MIN_DELAY_SECONDS = float(os.getenv("MIN_DELAY_SECONDS", "1"))
 MAX_DELAY_SECONDS = float(os.getenv("MAX_DELAY_SECONDS", "2"))
 NEXT_SCAN_HOURS = os.getenv("NEXT_SCAN_HOURS", "2")
+GEMINI_MAX_RETRIES = int(os.getenv("GEMINI_MAX_RETRIES", "2"))
+GEMINI_RETRY_BASE_SECONDS = float(os.getenv("GEMINI_RETRY_BASE_SECONDS", "3"))
 DEFAULT_GEMINI_MODEL = "gemini-1.5-flash"
 GEMINI_FALLBACK_MODELS = [
     "gemini-1.5-flash",
@@ -328,7 +330,44 @@ Format: [{{"title": "Job Title", "url": "https://..."}}]
 If no early-career roles found, return exactly: []"""
 
     try:
-        response = model.generate_content(prompt)
+        response = None
+        for attempt in range(GEMINI_MAX_RETRIES + 1):
+            try:
+                response = model.generate_content(prompt)
+                break
+            except Exception as exc:
+                message = str(exc).lower()
+                is_rate_limit = "429" in message or "quota" in message or "rate limit" in message
+                if not is_rate_limit:
+                    raise
+
+                # Hard exhausted quota won't recover with retries in this run.
+                if "limit: 0" in message:
+                    log(
+                        f"⚠️ Gemini quota exhausted at {company_name} "
+                        "(limit: 0). Skipping this company and continuing."
+                    )
+                    return [], True, "gemini_rate_limited"
+
+                if attempt < GEMINI_MAX_RETRIES:
+                    wait_seconds = GEMINI_RETRY_BASE_SECONDS * (2**attempt)
+                    log(
+                        f"⏳ Gemini rate-limited at {company_name}; "
+                        f"retrying in {wait_seconds:.0f}s "
+                        f"({attempt + 1}/{GEMINI_MAX_RETRIES})"
+                    )
+                    time.sleep(wait_seconds)
+                    continue
+
+                log(
+                    f"⚠️ Gemini rate-limit persisted at {company_name}; "
+                    "skipping this company and continuing."
+                )
+                return [], True, "gemini_rate_limited"
+
+        if response is None:
+            return [], True, "gemini"
+
         text = strip_markdown_fences(response.text or "")
         parsed = json.loads(text)
         if not isinstance(parsed, list):
@@ -348,13 +387,6 @@ If no early-career roles found, return exactly: []"""
         log(f"⚠️ Gemini parse failed at {company_name} ({exc})")
         return [], True, "gemini"
     except Exception as exc:
-        message = str(exc).lower()
-        if "429" in message or "quota" in message or "rate limit" in message:
-            log(
-                f"⚠️ Gemini quota/rate-limit at {company_name}; "
-                "disabling AI filtering for remaining companies this run"
-            )
-            return [], False, "gemini_rate_limited"
         log(f"❌ Gemini failed at {company_name} ({exc})")
         return [], True, "gemini"
 
