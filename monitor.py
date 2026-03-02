@@ -37,6 +37,15 @@ TARGET_SELECTORS = [
 ]
 
 JOB_LINK_KEYWORDS = ("job", "career", "position", "role", "opening")
+DEFAULT_GEMINI_MODEL = "gemini-1.5-flash"
+GEMINI_FALLBACK_MODELS = [
+    "gemini-1.5-flash",
+    "gemini-1.5-flash-latest",
+    "gemini-1.5-flash-8b",
+    "gemini-2.0-flash",
+    "gemini-2.0-flash-lite",
+    "gemini-2.5-flash",
+]
 
 
 def log(message: str) -> None:
@@ -72,10 +81,52 @@ def init_gemini() -> genai.GenerativeModel | None:
         return None
     try:
         genai.configure(api_key=api_key)
-        return genai.GenerativeModel("gemini-1.5-flash")
+        configured_model = os.getenv("GEMINI_MODEL", DEFAULT_GEMINI_MODEL).strip() or DEFAULT_GEMINI_MODEL
+        selected_model = resolve_gemini_model(configured_model)
+        log(f"🤖 Gemini model selected: {selected_model}")
+        return genai.GenerativeModel(selected_model)
     except Exception as exc:
         log(f"❌ Gemini init failed ({exc})")
         return None
+
+
+def resolve_gemini_model(preferred_model: str) -> str:
+    """
+    Pick a working model from account-available models.
+    Keeps preferred model first, then known fallbacks.
+    """
+    candidates: list[str] = [preferred_model]
+    for model in GEMINI_FALLBACK_MODELS:
+        if model not in candidates:
+            candidates.append(model)
+
+    try:
+        available: set[str] = set()
+        for model in genai.list_models():
+            methods = getattr(model, "supported_generation_methods", []) or []
+            if "generateContent" not in methods:
+                continue
+            model_name = getattr(model, "name", "")
+            if not model_name:
+                continue
+            available.add(model_name)
+            if model_name.startswith("models/"):
+                available.add(model_name.split("/", 1)[1])
+
+        for candidate in candidates:
+            if candidate in available or f"models/{candidate}" in available:
+                return candidate
+
+        # Final fallback to first available generation model.
+        normalized = sorted(
+            [m.split("/", 1)[1] if m.startswith("models/") else m for m in available]
+        )
+        if normalized:
+            return normalized[0]
+    except Exception as exc:
+        log(f"⚠️ Could not list Gemini models ({exc}); using preferred model")
+
+    return preferred_model
 
 
 def init_resend() -> bool:
