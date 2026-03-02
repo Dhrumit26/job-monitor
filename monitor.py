@@ -12,8 +12,19 @@ import resend
 from dotenv import load_dotenv
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
-from playwright_stealth import stealth_sync
 from supabase import Client, create_client
+
+try:
+    # playwright-stealth<=1.x API
+    from playwright_stealth import stealth_sync as legacy_stealth_sync
+except Exception:
+    legacy_stealth_sync = None
+
+try:
+    # playwright-stealth>=2.x API
+    from playwright_stealth import Stealth
+except Exception:
+    Stealth = None
 
 
 TARGET_SELECTORS = [
@@ -93,6 +104,27 @@ def dedupe_links(links: list[dict[str, str]]) -> list[dict[str, str]]:
         seen.add(href)
         out.append({"title": title, "url": href})
     return out
+
+
+def configure_stealth_context(context: Any) -> None:
+    """Apply stealth scripts in a version-compatible way."""
+    if Stealth is None:
+        return
+    try:
+        stealth = Stealth(init_scripts_only=True)
+        for script in getattr(stealth, "script_payload", []):
+            context.add_init_script(script)
+    except Exception as exc:
+        log(f"⚠️ Failed to apply context stealth ({exc})")
+
+
+def apply_page_stealth(page: Any) -> None:
+    if legacy_stealth_sync is None:
+        return
+    try:
+        legacy_stealth_sync(page)
+    except Exception as exc:
+        log(f"⚠️ Failed to apply page stealth ({exc})")
 
 
 def scrape_company_links(page: Any, company_name: str, company_url: str) -> tuple[list[dict[str, str]], bool]:
@@ -310,6 +342,7 @@ def main() -> None:
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         context = browser.new_context()
+        configure_stealth_context(context)
 
         for company in companies:
             company_name = company.get("name", "Unknown")
@@ -317,7 +350,7 @@ def main() -> None:
             t0 = time.perf_counter()
             page = context.new_page()
             try:
-                stealth_sync(page)
+                apply_page_stealth(page)
                 page.goto(company_url, wait_until="domcontentloaded", timeout=60000)
                 links, _used_targeted = scrape_company_links(page, company_name, company_url)
                 scraped_count += 1
