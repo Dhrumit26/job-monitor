@@ -25,6 +25,7 @@ The `url` column is `UNIQUE` and is the only dedup key.
 - `SUPABASE_URL`: Supabase project URL (`Settings -> API`)
 - `SUPABASE_KEY`: Supabase `service_role` or key with table write access (`Settings -> API`)
 - `GEMINI_API_KEY`: Google AI Studio key for Gemini
+- `OPENAI_API_KEY` (optional): OpenAI key used as fallback when Gemini is unavailable/rate-limited
 - `RESEND_API_KEY`: Resend API key
 - `ALERT_EMAIL`: recipient email for alert digests
 - `RESEND_FROM_EMAIL` (optional): sender email (defaults to `onboarding@resend.dev`)
@@ -38,6 +39,7 @@ Add these secrets:
 - `SUPABASE_URL`
 - `SUPABASE_KEY`
 - `GEMINI_API_KEY`
+- `OPENAI_API_KEY` (optional but recommended)
 - `RESEND_API_KEY`
 - `ALERT_EMAIL`
 - `RESEND_FROM_EMAIL` (recommended)

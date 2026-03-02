@@ -10,6 +10,7 @@ from urllib.parse import urljoin
 import google.generativeai as genai
 import resend
 from dotenv import load_dotenv
+from openai import OpenAI
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
 from supabase import Client, create_client
@@ -46,6 +47,7 @@ NEXT_SCAN_HOURS = os.getenv("NEXT_SCAN_HOURS", "2")
 GEMINI_MAX_RETRIES = int(os.getenv("GEMINI_MAX_RETRIES", "2"))
 GEMINI_RETRY_BASE_SECONDS = float(os.getenv("GEMINI_RETRY_BASE_SECONDS", "3"))
 DEFAULT_GEMINI_MODEL = "gemini-1.5-flash"
+DEFAULT_OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 GEMINI_FALLBACK_MODELS = [
     "gemini-1.5-flash",
     "gemini-1.5-flash-latest",
@@ -361,6 +363,20 @@ def init_gemini() -> genai.GenerativeModel | None:
         return None
 
 
+def init_openai() -> tuple[OpenAI | None, str]:
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        log("❌ OpenAI not configured (OPENAI_API_KEY missing)")
+        return None, DEFAULT_OPENAI_MODEL
+    try:
+        client = OpenAI(api_key=api_key)
+        log(f"🤖 OpenAI model selected: {DEFAULT_OPENAI_MODEL}")
+        return client, DEFAULT_OPENAI_MODEL
+    except Exception as exc:
+        log(f"❌ OpenAI init failed ({exc})")
+        return None, DEFAULT_OPENAI_MODEL
+
+
 def resolve_gemini_model(preferred_model: str) -> str:
     """
     Pick a working model from account-available models.
@@ -569,7 +585,7 @@ def gemini_filter_jobs(
     if not link_list:
         return [], True, "none"
     if model is None:
-        log(f"❌ Gemini unavailable, skipping AI filtering at {company_name}")
+        log(f"❌ Gemini unavailable, skipping Gemini filtering at {company_name}")
         return [], False, "gemini_unavailable"
 
     candidates = select_ai_candidates(link_list)
@@ -619,7 +635,7 @@ If no early-career roles found, return exactly: []"""
                         f"⚠️ Gemini quota exhausted at {company_name} "
                         "(limit: 0). Skipping this company and continuing."
                     )
-                    return [], True, "gemini_rate_limited"
+                    return [], False, "gemini_rate_limited"
 
                 if attempt < GEMINI_MAX_RETRIES:
                     wait_seconds = GEMINI_RETRY_BASE_SECONDS * (2**attempt)
@@ -635,7 +651,7 @@ If no early-career roles found, return exactly: []"""
                     f"⚠️ Gemini rate-limit persisted at {company_name}; "
                     "skipping this company and continuing."
                 )
-                return [], True, "gemini_rate_limited"
+                return [], False, "gemini_rate_limited"
 
         if response is None:
             return [], True, "gemini"
@@ -661,6 +677,104 @@ If no early-career roles found, return exactly: []"""
     except Exception as exc:
         log(f"❌ Gemini failed at {company_name} ({exc})")
         return [], True, "gemini"
+
+
+def openai_filter_jobs(
+    client: OpenAI | None,
+    model_name: str,
+    company_name: str,
+    link_list: list[dict[str, str]],
+) -> tuple[list[dict[str, str]], bool, str]:
+    if not link_list:
+        return [], True, "none"
+    if client is None:
+        log(f"❌ OpenAI unavailable, skipping OpenAI filtering at {company_name}")
+        return [], False, "openai_unavailable"
+
+    prompt = f"""You are a strict job filter.
+
+Goal:
+Select ONLY jobs that match ALL conditions:
+1) Location is in the United States (or remote within US)
+2) Early-career role around 0-1 years experience
+3) No security clearance required
+
+Use the title, URL text, and any location cues available in the input.
+If a job does not clearly satisfy all three, reject it.
+
+Important:
+- Inputs were prefiltered for software-engineering-like, early-career-like, US-like signals.
+- You must still reject anything that is actually non-US, senior/staff/principal+, or requires security clearance.
+
+Here is a list of candidate job links from {company_name}'s career page:
+{json.dumps(link_list)}
+
+Return ONLY a valid JSON array, no markdown, no explanation.
+Format: [{{"title": "Job Title", "url": "https://..."}}]
+If no early-career roles found, return exactly: []"""
+
+    try:
+        response = client.chat.completions.create(
+            model=model_name,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0,
+        )
+        text = ""
+        if response.choices and response.choices[0].message:
+            text = response.choices[0].message.content or ""
+        text = strip_markdown_fences(text)
+        parsed = json.loads(text)
+        if not isinstance(parsed, list):
+            log(f"⚠️ OpenAI parse warning at {company_name}: non-array response")
+            return [], True, "openai"
+        out: list[dict[str, str]] = []
+        for item in parsed:
+            if not isinstance(item, dict):
+                continue
+            title = str(item.get("title", "")).strip()
+            url = str(item.get("url", "")).strip()
+            if title and url:
+                out.append({"title": title, "url": url})
+        log(f"🧠 OpenAI: {len(out)} early-career matches at {company_name}")
+        return dedupe_links(out), True, "openai"
+    except json.JSONDecodeError as exc:
+        log(f"⚠️ OpenAI parse failed at {company_name} ({exc})")
+        return [], True, "openai"
+    except Exception as exc:
+        message = str(exc).lower()
+        if "429" in message or "quota" in message or "rate limit" in message:
+            log(f"⚠️ OpenAI rate-limited at {company_name}; skipping OpenAI for this run")
+            return [], False, "openai_rate_limited"
+        log(f"❌ OpenAI failed at {company_name} ({exc})")
+        return [], True, "openai"
+
+
+def filter_jobs_with_ai(
+    gemini_model: genai.GenerativeModel | None,
+    openai_client: OpenAI | None,
+    openai_model_name: str,
+    gemini_enabled: bool,
+    openai_enabled: bool,
+    company_name: str,
+    links: list[dict[str, str]],
+) -> tuple[list[dict[str, str]], bool, bool, str]:
+    if gemini_enabled:
+        matches, next_gemini_enabled, mode = gemini_filter_jobs(
+            gemini_model, company_name, links
+        )
+        if matches:
+            return matches, next_gemini_enabled, openai_enabled, mode
+        if mode not in ("gemini_rate_limited", "gemini_unavailable"):
+            return matches, next_gemini_enabled, openai_enabled, mode
+        gemini_enabled = next_gemini_enabled
+
+    if openai_enabled:
+        matches, next_openai_enabled, mode = openai_filter_jobs(
+            openai_client, openai_model_name, company_name, links
+        )
+        return matches, gemini_enabled, next_openai_enabled, mode
+
+    return [], gemini_enabled, openai_enabled, "ai_unavailable"
 
 
 def is_new_job(supabase: Client | None, url: str) -> bool | None:
@@ -764,9 +878,11 @@ def main() -> None:
     shard_companies = select_company_shard(filtered_companies)
 
     supabase = init_supabase()
-    model = init_gemini()
+    gemini_model = init_gemini()
+    openai_client, openai_model_name = init_openai()
     resend_ready = init_resend()
-    gemini_enabled = model is not None
+    gemini_enabled = gemini_model is not None
+    openai_enabled = openai_client is not None
 
     total_groups = max(1, int(os.getenv("TOTAL_GROUPS", "1")))
     group_index = int(os.getenv("GROUP_INDEX", "0"))
@@ -820,8 +936,12 @@ def main() -> None:
                 time.sleep(random.uniform(MIN_DELAY_SECONDS, MAX_DELAY_SECONDS))
                 continue
 
-            ai_matches, gemini_enabled, filter_mode = gemini_filter_jobs(
-                model if gemini_enabled else None,
+            ai_matches, gemini_enabled, openai_enabled, filter_mode = filter_jobs_with_ai(
+                gemini_model,
+                openai_client,
+                openai_model_name,
+                gemini_enabled,
+                openai_enabled,
                 company_name,
                 links,
             )
