@@ -37,6 +37,7 @@ TARGET_SELECTORS = [
 ]
 
 JOB_LINK_KEYWORDS = ("job", "career", "position", "role", "opening")
+PAGE_GOTO_TIMEOUT_MS = int(os.getenv("PAGE_GOTO_TIMEOUT_MS", "30000"))
 DEFAULT_GEMINI_MODEL = "gemini-1.5-flash"
 GEMINI_FALLBACK_MODELS = [
     "gemini-1.5-flash",
@@ -472,8 +473,9 @@ def main() -> None:
             t0 = time.perf_counter()
             page = context.new_page()
             try:
+                log(f"🌐 Scraping {company_name}...")
                 apply_page_stealth(page)
-                page.goto(company_url, wait_until="domcontentloaded", timeout=60000)
+                page.goto(company_url, wait_until="domcontentloaded", timeout=PAGE_GOTO_TIMEOUT_MS)
                 links, _used_targeted = scrape_company_links(page, company_name, company_url)
                 scraped_count += 1
                 elapsed = time.perf_counter() - t0
