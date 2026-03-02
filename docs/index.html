@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Job Monitor Dashboard</title>
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+        margin: 24px;
+        color: #111827;
+      }
+      .meta {
+        color: #6b7280;
+        margin-bottom: 14px;
+      }
+      .controls {
+        display: flex;
+        gap: 8px;
+        margin-bottom: 12px;
+      }
+      input,
+      select {
+        padding: 8px;
+        border: 1px solid #d1d5db;
+        border-radius: 6px;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+      }
+      th,
+      td {
+        text-align: left;
+        border-bottom: 1px solid #e5e7eb;
+        padding: 10px 8px;
+        vertical-align: top;
+      }
+      th {
+        background: #f9fafb;
+      }
+      .tag {
+        display: inline-block;
+        padding: 3px 8px;
+        border-radius: 999px;
+        font-size: 12px;
+        font-weight: 600;
+      }
+      .tag.match {
+        background: #dcfce7;
+        color: #166534;
+      }
+      .tag.nomatch {
+        background: #f3f4f6;
+        color: #374151;
+      }
+      a {
+        color: #2563eb;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Job Monitor Dashboard</h1>
+    <div class="meta" id="meta">Loading...</div>
+
+    <div class="controls">
+      <input id="search" placeholder="Search title/company/url..." />
+      <select id="matchFilter">
+        <option value="all">All</option>
+        <option value="matched">Matched only</option>
+      </select>
+    </div>
+
+    <table>
+      <thead>
+        <tr>
+          <th>Date</th>
+          <th>Company</th>
+          <th>Title</th>
+          <th>Status</th>
+          <th>Reason</th>
+          <th>Link</th>
+        </tr>
+      </thead>
+      <tbody id="rows"></tbody>
+    </table>
+
+    <script>
+      let allRows = [];
+
+      function esc(v) {
+        return String(v || "")
+          .replaceAll("&", "&amp;")
+          .replaceAll("<", "&lt;")
+          .replaceAll(">", "&gt;");
+      }
+
+      function render() {
+        const q = document.getElementById("search").value.toLowerCase().trim();
+        const mode = document.getElementById("matchFilter").value;
+        const tbody = document.getElementById("rows");
+
+        const filtered = allRows.filter((r) => {
+          if (mode === "matched" && !r.matched) return false;
+          const hay = `${r.company || ""} ${r.title || ""} ${r.url || ""}`.toLowerCase();
+          return !q || hay.includes(q);
+        });
+
+        tbody.innerHTML = filtered
+          .map(
+            (r) => `
+          <tr>
+            <td>${esc(r.date_found || "")}</td>
+            <td>${esc(r.company || "")}</td>
+            <td>${esc(r.title || "")}</td>
+            <td><span class="tag ${r.matched ? "match" : "nomatch"}">${r.matched ? "Matched" : "Seen"}</span></td>
+            <td>${esc(r.ai_reason || "")}</td>
+            <td><a href="${esc(r.url || "")}" target="_blank" rel="noreferrer">Open</a></td>
+          </tr>
+        `
+          )
+          .join("");
+      }
+
+      async function loadData() {
+        try {
+          const res = await fetch("./data.json", { cache: "no-store" });
+          const data = await res.json();
+          allRows = data.rows || [];
+          document.getElementById("meta").textContent =
+            `Updated: ${data.generated_at || "unknown"} | Total rows: ${data.total_rows || 0} | Matched rows: ${data.matched_rows || 0}`;
+          render();
+        } catch (e) {
+          document.getElementById("meta").textContent = `Failed to load dashboard data: ${e}`;
+        }
+      }
+
+      document.getElementById("search").addEventListener("input", render);
+      document.getElementById("matchFilter").addEventListener("change", render);
+      loadData();
+    </script>
+  </body>
+</html>

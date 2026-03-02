@@ -1,6 +1,6 @@
 # Job Monitor
 
-Python automation that scans company career pages every 4 hours, filters early-career roles with Gemini, deduplicates by URL in Supabase, and sends a single email digest through Resend.
+Python automation that scans company career pages on schedule, filters early-career roles with Gemini, deduplicates by URL in Supabase, sends an email digest through Resend, and publishes a live dashboard table on GitHub Pages.
 
 ## 1) Supabase setup (exact SQL)
 
@@ -42,12 +42,25 @@ Add these secrets:
 - `ALERT_EMAIL`
 - `RESEND_FROM_EMAIL` (recommended)
 
-Workflow file is at `.github/workflows/job_monitor.yml` and runs on:
+Workflows:
 
-- Schedule: every 4 hours (`0 */4 * * *`)
-- Manual trigger: `workflow_dispatch`
+- `.github/workflows/job_monitor.yml` (companies): every 2 hours (`0 */2 * * *`)
+- `.github/workflows/job_monitor_trackers.yml` (trackers): every 6 hours (`30 */6 * * *`)
+- Both also support manual trigger: `workflow_dispatch`
 
-## 4) Add or remove companies
+## 4) Live dashboard table (GitHub Pages)
+
+Every workflow run generates `docs/data.json` from Supabase and deploys `docs/index.html` to GitHub Pages.
+
+In GitHub repo settings, enable Pages with:
+
+- Source: **GitHub Actions**
+
+After the first successful deployment job, your live table URL will be:
+
+- `https://<your-github-username>.github.io/<your-repo-name>/`
+
+## 5) Add or remove companies
 
 Edit `companies.json`:
 
@@ -63,7 +76,7 @@ Tips:
 - Use direct careers pages only when board URLs are not available.
 - Keep `name` and `url` keys exactly as shown.
 
-## 5) If a company returns 403 blocked
+## 6) If a company returns 403 blocked
 
 The script logs blocked targets and continues:
 
