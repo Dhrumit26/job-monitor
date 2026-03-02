@@ -52,110 +52,6 @@ GEMINI_FALLBACK_MODELS = [
     "gemini-2.0-flash-lite",
     "gemini-2.5-flash",
 ]
-EARLY_INCLUDE_KEYWORDS = (
-    "junior",
-    "associate",
-    "entry",
-    "entry-level",
-    "graduate",
-    "new grad",
-    "new-grad",
-    "trainee",
-    "intern",
-    "level i",
-    "swe i",
-    "0-1",
-    "0 to 1",
-    "0+ years",
-    "1+ years",
-    "1 year",
-)
-EARLY_EXCLUDE_KEYWORDS = (
-    "senior",
-    "sr.",
-    "staff",
-    "lead",
-    "principal",
-    "distinguished",
-    "manager",
-    "director",
-    "head of",
-    "vp",
-    "chief",
-    "c-level",
-    "experienced",
-    "seasoned",
-    "2+ years",
-    "3 years",
-    "3+ years",
-    "4 years",
-    "3+ years",
-    "4+ years",
-    "5+ years",
-    "6+ years",
-    "7+ years",
-    "8+ years",
-    "security clearance",
-    "clearance required",
-    "active clearance",
-    "top secret",
-    "secret clearance",
-    "ts/sci",
-    "polygraph",
-)
-US_INCLUDE_KEYWORDS = (
-    "united states",
-    "usa",
-    "us only",
-    "u.s.",
-    "u.s.a",
-    "new york",
-    "san francisco",
-    "seattle",
-    "austin",
-    "boston",
-    "chicago",
-    "los angeles",
-    "atlanta",
-    "miami",
-    "denver",
-    "washington, dc",
-    "washington dc",
-    "remote us",
-    "remote - us",
-    "remote (us)",
-)
-NON_US_KEYWORDS = (
-    "singapore",
-    "india",
-    "canada",
-    "london",
-    "uk",
-    "united kingdom",
-    "ireland",
-    "germany",
-    "france",
-    "spain",
-    "italy",
-    "sweden",
-    "poland",
-    "netherlands",
-    "australia",
-    "new zealand",
-    "japan",
-    "korea",
-    "hong kong",
-    "taiwan",
-    "china",
-    "brazil",
-    "mexico",
-    "argentina",
-    "uae",
-    "dubai",
-    "emea",
-    "apac",
-    "latam",
-)
 
 
 def log(message: str) -> None:
@@ -396,40 +292,6 @@ def strip_markdown_fences(text: str) -> str:
     return cleaned.strip("` \njson")
 
 
-def is_us_role(title: str, url: str) -> bool:
-    haystack = f"{title} {url}".lower()
-    if any(keyword in haystack for keyword in NON_US_KEYWORDS):
-        return False
-    if any(keyword in haystack for keyword in US_INCLUDE_KEYWORDS):
-        return True
-    # If no clear location signal, allow and let next scans catch richer titles.
-    return True
-
-
-def passes_hard_filters(title: str, url: str) -> bool:
-    haystack = f"{title} {url}".lower()
-    if any(keyword in haystack for keyword in EARLY_EXCLUDE_KEYWORDS):
-        return False
-    if not is_us_role(title, url):
-        return False
-    return True
-
-
-def heuristic_filter_jobs(link_list: list[dict[str, str]]) -> list[dict[str, str]]:
-    out: list[dict[str, str]] = []
-    for item in link_list:
-        title = str(item.get("title", "")).strip()
-        url = str(item.get("url", "")).strip()
-        if not url:
-            continue
-        haystack = f"{title} {url}".lower()
-        if not passes_hard_filters(title, url):
-            continue
-        if any(keyword in haystack for keyword in EARLY_INCLUDE_KEYWORDS):
-            out.append({"title": title or "Untitled Role", "url": url})
-    return dedupe_links(out)
-
-
 def gemini_filter_jobs(
     model: genai.GenerativeModel | None,
     company_name: str,
@@ -444,22 +306,19 @@ def gemini_filter_jobs(
     if not link_list:
         return [], True, "none"
     if model is None:
-        fallback = heuristic_filter_jobs(link_list)
-        log(f"🧠 Fallback filter: {len(fallback)} matches at {company_name}")
-        return fallback, False, "heuristic"
+        log(f"❌ Gemini unavailable, skipping AI filtering at {company_name}")
+        return [], False, "gemini_unavailable"
 
-    prompt = f"""You are a job filter for an early-career candidate (0-3 years exp).
+    prompt = f"""You are a strict job filter.
 
-APPROVE only:
-US-based roles (United States or Remote US) that are Junior, Associate,
-Entry Level, Graduate, Trainee, Intern, Level I, SWE I,
-or roles requiring 0-1 years of experience
+Goal:
+Select ONLY jobs that match ALL conditions:
+1) Location is in the United States (or remote within US)
+2) Early-career role around 0-1 years experience
+3) No security clearance required
 
-REJECT without exception:
-Senior, Sr., Staff, Lead, Principal, Distinguished, Manager,
-Director, Head of, VP, C-Level, roles requiring 2+ years,
-words like "experienced" or "seasoned" in title,
-any non-US location, and any role requiring security clearance
+Use the title, URL text, and any location cues available in the input.
+If a job does not clearly satisfy all three, reject it.
 
 Here is a list of job links from {company_name}'s career page:
 {json.dumps(link_list)}
@@ -481,7 +340,7 @@ If no early-career roles found, return exactly: []"""
                 continue
             title = str(item.get("title", "")).strip()
             url = str(item.get("url", "")).strip()
-            if title and url and passes_hard_filters(title, url):
+            if title and url:
                 out.append({"title": title, "url": url})
         log(f"🤖 Gemini: {len(out)} early-career matches at {company_name}")
         return dedupe_links(out), True, "gemini"
@@ -493,11 +352,9 @@ If no early-career roles found, return exactly: []"""
         if "429" in message or "quota" in message or "rate limit" in message:
             log(
                 f"⚠️ Gemini quota/rate-limit at {company_name}; "
-                "switching to heuristic filter for remaining companies"
+                "disabling AI filtering for remaining companies this run"
             )
-            fallback = heuristic_filter_jobs(link_list)
-            log(f"🧠 Fallback filter: {len(fallback)} matches at {company_name}")
-            return fallback, False, "heuristic"
+            return [], False, "gemini_rate_limited"
         log(f"❌ Gemini failed at {company_name} ({exc})")
         return [], True, "gemini"
 
