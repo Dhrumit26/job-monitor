@@ -46,6 +46,45 @@ GEMINI_FALLBACK_MODELS = [
     "gemini-2.0-flash-lite",
     "gemini-2.5-flash",
 ]
+EARLY_INCLUDE_KEYWORDS = (
+    "junior",
+    "associate",
+    "entry",
+    "entry-level",
+    "graduate",
+    "new grad",
+    "new-grad",
+    "trainee",
+    "intern",
+    "level i",
+    "level ii",
+    "swe i",
+    "swe ii",
+    "0-2",
+    "0 to 2",
+    "0+ years",
+    "1+ years",
+    "2+ years",
+)
+EARLY_EXCLUDE_KEYWORDS = (
+    "senior",
+    "sr.",
+    "staff",
+    "lead",
+    "principal",
+    "distinguished",
+    "manager",
+    "director",
+    "head of",
+    "vp",
+    "chief",
+    "c-level",
+    "experienced",
+    "seasoned",
+    "3+ years",
+    "4+ years",
+    "5+ years",
+)
 
 
 def log(message: str) -> None:
@@ -228,16 +267,38 @@ def strip_markdown_fences(text: str) -> str:
     return cleaned.strip("` \njson")
 
 
+def heuristic_filter_jobs(link_list: list[dict[str, str]]) -> list[dict[str, str]]:
+    out: list[dict[str, str]] = []
+    for item in link_list:
+        title = str(item.get("title", "")).strip()
+        url = str(item.get("url", "")).strip()
+        if not url:
+            continue
+        haystack = f"{title} {url}".lower()
+        if any(keyword in haystack for keyword in EARLY_EXCLUDE_KEYWORDS):
+            continue
+        if any(keyword in haystack for keyword in EARLY_INCLUDE_KEYWORDS):
+            out.append({"title": title or "Untitled Role", "url": url})
+    return dedupe_links(out)
+
+
 def gemini_filter_jobs(
     model: genai.GenerativeModel | None,
     company_name: str,
     link_list: list[dict[str, str]],
-) -> list[dict[str, str]]:
-    if model is None:
-        log(f"❌ Gemini unavailable, skipping {company_name}")
-        return []
+) -> tuple[list[dict[str, str]], bool, str]:
+    """
+    Returns:
+      - matches
+      - whether Gemini should remain enabled for subsequent companies
+      - filter mode label for logging/persistence
+    """
     if not link_list:
-        return []
+        return [], True, "none"
+    if model is None:
+        fallback = heuristic_filter_jobs(link_list)
+        log(f"🧠 Fallback filter: {len(fallback)} matches at {company_name}")
+        return fallback, False, "heuristic"
 
     prompt = f"""You are a job filter for an early-career candidate (0-3 years exp).
 
@@ -263,7 +324,7 @@ If no early-career roles found, return exactly: []"""
         parsed = json.loads(text)
         if not isinstance(parsed, list):
             log(f"⚠️ Gemini parse warning at {company_name}: non-array response")
-            return []
+            return [], True, "gemini"
         out: list[dict[str, str]] = []
         for item in parsed:
             if not isinstance(item, dict):
@@ -273,13 +334,22 @@ If no early-career roles found, return exactly: []"""
             if title and url:
                 out.append({"title": title, "url": url})
         log(f"🤖 Gemini: {len(out)} early-career matches at {company_name}")
-        return dedupe_links(out)
+        return dedupe_links(out), True, "gemini"
     except json.JSONDecodeError as exc:
         log(f"⚠️ Gemini parse failed at {company_name} ({exc})")
-        return []
+        return [], True, "gemini"
     except Exception as exc:
+        message = str(exc).lower()
+        if "429" in message or "quota" in message or "rate limit" in message:
+            log(
+                f"⚠️ Gemini quota/rate-limit at {company_name}; "
+                "switching to heuristic filter for remaining companies"
+            )
+            fallback = heuristic_filter_jobs(link_list)
+            log(f"🧠 Fallback filter: {len(fallback)} matches at {company_name}")
+            return fallback, False, "heuristic"
         log(f"❌ Gemini failed at {company_name} ({exc})")
-        return []
+        return [], True, "gemini"
 
 
 def is_new_job(supabase: Client | None, url: str) -> bool:
@@ -383,6 +453,7 @@ def main() -> None:
     supabase = init_supabase()
     model = init_gemini()
     resend_ready = init_resend()
+    gemini_enabled = model is not None
 
     scraped_count = 0
     blocked_count = 0
@@ -426,7 +497,11 @@ def main() -> None:
                 time.sleep(random.uniform(2, 4))
                 continue
 
-            ai_matches = gemini_filter_jobs(model, company_name, links)
+            ai_matches, gemini_enabled, filter_mode = gemini_filter_jobs(
+                model if gemini_enabled else None,
+                company_name,
+                links,
+            )
             total_matched += len(ai_matches)
 
             for match in ai_matches:
@@ -443,7 +518,7 @@ def main() -> None:
                     company=company_name,
                     url=url,
                     matched=True,
-                    ai_reason="Gemini early-career match",
+                    ai_reason=f"{filter_mode} early-career match",
                 )
                 if not saved:
                     continue
