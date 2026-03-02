@@ -9,7 +9,7 @@ jobs:
   monitor-trackers:
     runs-on: ubuntu-latest
     concurrency:
-      group: job-monitor-trackers
+      group: job-monitor-trackers-${{ github.ref }}-${{ matrix.group_index }}
       cancel-in-progress: true
     strategy:
       fail-fast: false
