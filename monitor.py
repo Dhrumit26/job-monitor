@@ -54,6 +54,95 @@ GEMINI_FALLBACK_MODELS = [
     "gemini-2.0-flash-lite",
     "gemini-2.5-flash",
 ]
+POSITION_INCLUDE_KEYWORDS = (
+    "software engineer",
+    "software developer",
+    "swe",
+    "sde",
+    "backend engineer",
+    "frontend engineer",
+    "full stack engineer",
+    "platform engineer",
+)
+EARLY_CAREER_INCLUDE_KEYWORDS = (
+    "entry",
+    "entry-level",
+    "entry level",
+    "junior",
+    "new grad",
+    "new-grad",
+    "graduate",
+    "intern",
+    "associate",
+    "level i",
+    "l1",
+    "0-1",
+    "0 to 1",
+    "1 year",
+)
+SENIORITY_REJECT_KEYWORDS = (
+    "senior",
+    "sr.",
+    "staff",
+    "principal",
+    "lead",
+    "manager",
+    "director",
+    "head of",
+    "vp",
+)
+CLEARANCE_REJECT_KEYWORDS = (
+    "security clearance",
+    "clearance required",
+    "active clearance",
+    "top secret",
+    "secret clearance",
+    "ts/sci",
+    "polygraph",
+)
+US_LOCATION_INCLUDE_KEYWORDS = (
+    "united states",
+    "usa",
+    "u.s.",
+    "us only",
+    "remote us",
+    "remote - us",
+    "remote (us)",
+    "new york",
+    "san francisco",
+    "seattle",
+    "austin",
+    "boston",
+    "chicago",
+    "los angeles",
+)
+NON_US_LOCATION_REJECT_KEYWORDS = (
+    "singapore",
+    "india",
+    "canada",
+    "united kingdom",
+    "uk",
+    "london",
+    "germany",
+    "france",
+    "ireland",
+    "spain",
+    "italy",
+    "netherlands",
+    "australia",
+    "new zealand",
+    "japan",
+    "korea",
+    "hong kong",
+    "taiwan",
+    "china",
+    "brazil",
+    "mexico",
+    "argentina",
+    "emea",
+    "apac",
+    "latam",
+)
 
 
 def log(message: str) -> None:
@@ -294,6 +383,41 @@ def strip_markdown_fences(text: str) -> str:
     return cleaned.strip("` \njson")
 
 
+def should_reject_before_ai(title: str, url: str) -> bool:
+    haystack = f"{title} {url}".lower()
+    if any(keyword in haystack for keyword in SENIORITY_REJECT_KEYWORDS):
+        return True
+    if any(keyword in haystack for keyword in CLEARANCE_REJECT_KEYWORDS):
+        return True
+    if any(keyword in haystack for keyword in NON_US_LOCATION_REJECT_KEYWORDS):
+        return True
+    return False
+
+
+def is_candidate_for_ai(title: str, url: str) -> bool:
+    haystack = f"{title} {url}".lower()
+    has_position = any(keyword in haystack for keyword in POSITION_INCLUDE_KEYWORDS)
+    has_early_career = any(keyword in haystack for keyword in EARLY_CAREER_INCLUDE_KEYWORDS)
+    has_us_signal = any(keyword in haystack for keyword in US_LOCATION_INCLUDE_KEYWORDS)
+    # Allow SDE/SWE-like titles through even when explicit early/location tokens are sparse.
+    explicit_engineer_signal = "sde" in haystack or "swe" in haystack
+    return has_position and (has_early_career or has_us_signal or explicit_engineer_signal)
+
+
+def select_ai_candidates(link_list: list[dict[str, str]]) -> list[dict[str, str]]:
+    candidates: list[dict[str, str]] = []
+    for item in link_list:
+        title = str(item.get("title", "")).strip()
+        url = str(item.get("url", "")).strip()
+        if not title or not url:
+            continue
+        if should_reject_before_ai(title, url):
+            continue
+        if is_candidate_for_ai(title, url):
+            candidates.append({"title": title, "url": url})
+    return dedupe_links(candidates)
+
+
 def gemini_filter_jobs(
     model: genai.GenerativeModel | None,
     company_name: str,
@@ -311,6 +435,13 @@ def gemini_filter_jobs(
         log(f"❌ Gemini unavailable, skipping AI filtering at {company_name}")
         return [], False, "gemini_unavailable"
 
+    candidates = select_ai_candidates(link_list)
+    if not candidates:
+        log(f"🧪 Prefilter: 0 AI candidates at {company_name}")
+        return [], True, "prefilter"
+
+    log(f"🧪 Prefilter: {len(candidates)} AI candidates at {company_name}")
+
     prompt = f"""You are a strict job filter.
 
 Goal:
@@ -322,8 +453,12 @@ Select ONLY jobs that match ALL conditions:
 Use the title, URL text, and any location cues available in the input.
 If a job does not clearly satisfy all three, reject it.
 
-Here is a list of job links from {company_name}'s career page:
-{json.dumps(link_list)}
+Important:
+- Inputs were prefiltered for software-engineering-like, early-career-like, US-like signals.
+- You must still reject anything that is actually non-US, senior/staff/principal+, or requires security clearance.
+
+Here is a list of candidate job links from {company_name}'s career page:
+{json.dumps(candidates)}
 
 Return ONLY a valid JSON array, no markdown, no explanation.
 Format: [{{"title": "Job Title", "url": "https://..."}}]
