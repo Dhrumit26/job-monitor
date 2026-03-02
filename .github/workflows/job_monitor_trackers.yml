@@ -1,20 +1,20 @@
-name: Job Monitor
+name: Job Monitor Trackers
 
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 */2 * * *"
+    - cron: "30 */6 * * *"
 
 jobs:
-  monitor:
+  monitor-trackers:
     runs-on: ubuntu-latest
     concurrency:
-      group: job-monitor-companies
+      group: job-monitor-trackers
       cancel-in-progress: true
     strategy:
       fail-fast: false
       matrix:
-        group_index: [0, 1, 2]
+        group_index: [0, 1]
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -33,7 +33,7 @@ jobs:
       - name: Install Playwright system dependencies
         run: playwright install-deps chromium
 
-      - name: Run monitor
+      - name: Run tracker monitor
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
@@ -41,13 +41,13 @@ jobs:
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
           ALERT_EMAIL: ${{ secrets.ALERT_EMAIL }}
           RESEND_FROM_EMAIL: ${{ secrets.RESEND_FROM_EMAIL }}
-          SOURCE_MODE: "companies"
-          TOTAL_GROUPS: "3"
+          SOURCE_MODE: "trackers"
+          TOTAL_GROUPS: "2"
           GROUP_INDEX: ${{ matrix.group_index }}
           PAGE_GOTO_TIMEOUT_MS: "30000"
           MAX_SCRAPE_RETRIES: "1"
           RETRY_TIMEOUT_MS: "60000"
           MIN_DELAY_SECONDS: "0.5"
           MAX_DELAY_SECONDS: "1.0"
-          NEXT_SCAN_HOURS: "2"
+          NEXT_SCAN_HOURS: "6"
         run: python monitor.py

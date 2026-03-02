@@ -38,8 +38,11 @@ TARGET_SELECTORS = [
 
 JOB_LINK_KEYWORDS = ("job", "career", "position", "role", "opening")
 PAGE_GOTO_TIMEOUT_MS = int(os.getenv("PAGE_GOTO_TIMEOUT_MS", "30000"))
+RETRY_TIMEOUT_MS = int(os.getenv("RETRY_TIMEOUT_MS", "60000"))
+MAX_SCRAPE_RETRIES = int(os.getenv("MAX_SCRAPE_RETRIES", "1"))
 MIN_DELAY_SECONDS = float(os.getenv("MIN_DELAY_SECONDS", "1"))
 MAX_DELAY_SECONDS = float(os.getenv("MAX_DELAY_SECONDS", "2"))
+NEXT_SCAN_HOURS = os.getenv("NEXT_SCAN_HOURS", "2")
 DEFAULT_GEMINI_MODEL = "gemini-1.5-flash"
 GEMINI_FALLBACK_MODELS = [
     "gemini-1.5-flash",
@@ -101,6 +104,34 @@ def now_iso() -> str:
 def load_companies(path: str) -> list[dict[str, str]]:
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
+
+
+def is_tracker_source(company: dict[str, str]) -> bool:
+    name = (company.get("name") or "").lower()
+    url = (company.get("url") or "").lower()
+    name_keywords = ("tracker", "list", "feed", "board", "meta-source")
+    url_keywords = (
+        "simplify.jobs",
+        "github.com/simplifyjobs/new-grad-positions",
+        "jobright.ai",
+        "jobsfornewgrad.com",
+        "indeed.com",
+        "forbes.com/lists",
+        "greatplacetowork.com",
+        "linkedin.com/jobs/software-engineer-new-grad-jobs",
+    )
+    return any(keyword in name for keyword in name_keywords) or any(
+        keyword in url for keyword in url_keywords
+    )
+
+
+def filter_company_sources(companies: list[dict[str, str]]) -> list[dict[str, str]]:
+    source_mode = os.getenv("SOURCE_MODE", "all").strip().lower()
+    if source_mode == "companies":
+        return [company for company in companies if not is_tracker_source(company)]
+    if source_mode == "trackers":
+        return [company for company in companies if is_tracker_source(company)]
+    return companies
 
 
 def select_company_shard(companies: list[dict[str, str]]) -> list[dict[str, str]]:
@@ -227,6 +258,27 @@ def apply_page_stealth(page: Any) -> None:
         legacy_stealth_sync(page)
     except Exception as exc:
         log(f"⚠️ Failed to apply page stealth ({exc})")
+
+
+def goto_with_retry(page: Any, company_name: str, company_url: str) -> None:
+    last_exc: Exception | None = None
+    for attempt in range(MAX_SCRAPE_RETRIES + 1):
+        timeout_ms = PAGE_GOTO_TIMEOUT_MS if attempt == 0 else RETRY_TIMEOUT_MS
+        try:
+            page.goto(company_url, wait_until="domcontentloaded", timeout=timeout_ms)
+            return
+        except Exception as exc:
+            last_exc = exc
+            if attempt < MAX_SCRAPE_RETRIES:
+                log(
+                    f"🔁 Retry {attempt + 1}/{MAX_SCRAPE_RETRIES} for {company_name} "
+                    f"after navigation error ({exc})"
+                )
+                continue
+            raise
+
+    if last_exc is not None:
+        raise last_exc
 
 
 def scrape_company_links(page: Any, company_name: str, company_url: str) -> tuple[list[dict[str, str]], bool]:
@@ -423,7 +475,7 @@ def build_email_html(matches: list[dict[str, str]]) -> str:
         <div style="max-width:600px;margin:0 auto;padding:24px;">
           <h2 style="color:#111827;">New Early-Career Job Matches</h2>
           {''.join(cards)}
-          <p style="margin-top:20px;color:#6b7280;font-size:12px;">Job Monitor • Next scan in 2 hours</p>
+          <p style="margin-top:20px;color:#6b7280;font-size:12px;">Job Monitor • Next scan in {NEXT_SCAN_HOURS} hours</p>
         </div>
       </body>
     </html>
@@ -461,7 +513,8 @@ def main() -> None:
     script_dir = os.path.dirname(os.path.abspath(__file__))
     companies_path = os.path.join(script_dir, "companies.json")
     companies = load_companies(companies_path)
-    shard_companies = select_company_shard(companies)
+    filtered_companies = filter_company_sources(companies)
+    shard_companies = select_company_shard(filtered_companies)
 
     supabase = init_supabase()
     model = init_gemini()
@@ -470,9 +523,11 @@ def main() -> None:
 
     total_groups = max(1, int(os.getenv("TOTAL_GROUPS", "1")))
     group_index = int(os.getenv("GROUP_INDEX", "0"))
+    source_mode = os.getenv("SOURCE_MODE", "all").strip().lower()
     log(
-        f"🧩 Shard {group_index + 1}/{total_groups} active — "
-        f"{len(shard_companies)} of {len(companies)} companies assigned"
+        f"🧩 Shard {group_index + 1}/{total_groups} ({source_mode}) active — "
+        f"{len(shard_companies)} of {len(filtered_companies)} selected sources "
+        f"({len(companies)} total in file)"
     )
 
     scraped_count = 0
@@ -494,7 +549,7 @@ def main() -> None:
             try:
                 log(f"🌐 Scraping {company_name}...")
                 apply_page_stealth(page)
-                page.goto(company_url, wait_until="domcontentloaded", timeout=PAGE_GOTO_TIMEOUT_MS)
+                goto_with_retry(page, company_name, company_url)
                 links, _used_targeted = scrape_company_links(page, company_name, company_url)
                 scraped_count += 1
                 elapsed = time.perf_counter() - t0
