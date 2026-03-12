@@ -38,6 +38,16 @@ TARGET_SELECTORS = [
 ]
 
 JOB_LINK_KEYWORDS = ("job", "career", "position", "role", "opening")
+JOB_URL_HINTS = (
+    "/job/",
+    "/jobs/",
+    "/careers/",
+    "/positions/",
+    "myworkdayjobs.com",
+    "greenhouse.io",
+    "lever.co",
+    "ashbyhq.com",
+)
 PAGE_GOTO_TIMEOUT_MS = int(os.getenv("PAGE_GOTO_TIMEOUT_MS", "30000"))
 RETRY_TIMEOUT_MS = int(os.getenv("RETRY_TIMEOUT_MS", "60000"))
 MAX_SCRAPE_RETRIES = int(os.getenv("MAX_SCRAPE_RETRIES", "1"))
@@ -81,6 +91,29 @@ POSITION_INCLUDE_KEYWORDS = (
     "test engineer",
     "site reliability engineer",
     "sre",
+    "devops engineer",
+)
+SOFTWARE_CORE_KEYWORDS = (
+    "software engineer",
+    "software developer",
+    "software development engineer",
+    "swe",
+    "sde",
+    "backend",
+    "back-end",
+    "frontend",
+    "front-end",
+    "full stack",
+    "fullstack",
+    "platform engineer",
+    "mobile engineer",
+    "ios engineer",
+    "android engineer",
+    "web engineer",
+    "qa engineer",
+    "test engineer",
+    "sre",
+    "site reliability",
     "devops engineer",
 )
 EARLY_CAREER_INCLUDE_KEYWORDS = (
@@ -165,6 +198,36 @@ CLEARANCE_REJECT_KEYWORDS = (
     "polygraph",
     "dod clearance",
     "classified",
+)
+BUSINESS_REJECT_KEYWORDS = (
+    "business analyst",
+    "business operations",
+    "operations analyst",
+    "operations manager",
+    "product manager",
+    "program manager",
+    "project manager",
+    "marketing",
+    "sales",
+    "account executive",
+    "account manager",
+    "customer success",
+    "customer support",
+    "support specialist",
+    "human resources",
+    "hr ",
+    "recruiter",
+    "talent acquisition",
+    "people partner",
+    "finance",
+    "fp&a",
+    "accounting",
+    "legal",
+    "compliance",
+    "procurement",
+    "supply chain",
+    "admin",
+    "administrative",
 )
 US_LOCATION_INCLUDE_KEYWORDS = (
     "united states",
@@ -493,7 +556,14 @@ def scrape_company_links(page: Any, company_name: str, company_url: str) -> tupl
         if not href:
             continue
         lower_href = href.lower()
-        if any(keyword in lower_href for keyword in JOB_LINK_KEYWORDS):
+        lower_text = text.lower()
+        href_has_job_signal = any(keyword in lower_href for keyword in JOB_LINK_KEYWORDS) or any(
+            hint in lower_href for hint in JOB_URL_HINTS
+        )
+        text_has_job_signal = any(keyword in lower_text for keyword in POSITION_INCLUDE_KEYWORDS) or any(
+            keyword in lower_text for keyword in EARLY_CAREER_INCLUDE_KEYWORDS
+        )
+        if href_has_job_signal or text_has_job_signal:
             links.append({"title": text or "Untitled Role", "url": href})
 
     if not links:
@@ -514,19 +584,41 @@ def should_reject_before_ai(title: str, url: str) -> bool:
         return True
     if any(keyword in haystack for keyword in CLEARANCE_REJECT_KEYWORDS):
         return True
+    if any(keyword in haystack for keyword in BUSINESS_REJECT_KEYWORDS):
+        return True
     if any(keyword in haystack for keyword in NON_US_LOCATION_REJECT_KEYWORDS):
         return True
     return False
 
 
+def has_software_signal(title: str, url: str) -> bool:
+    haystack = f"{title} {url}".lower()
+    return any(keyword in haystack for keyword in SOFTWARE_CORE_KEYWORDS)
+
+
 def is_candidate_for_ai(title: str, url: str) -> bool:
     haystack = f"{title} {url}".lower()
-    has_position = any(keyword in haystack for keyword in POSITION_INCLUDE_KEYWORDS)
-    has_early_career = any(keyword in haystack for keyword in EARLY_CAREER_INCLUDE_KEYWORDS)
-    has_us_signal = any(keyword in haystack for keyword in US_LOCATION_INCLUDE_KEYWORDS)
-    # Allow SDE/SWE-like titles through even when explicit early/location tokens are sparse.
-    explicit_engineer_signal = "sde" in haystack or "swe" in haystack
-    return has_position and (has_early_career or has_us_signal or explicit_engineer_signal)
+    has_position = has_software_signal(title, url) or any(
+        keyword in haystack for keyword in POSITION_INCLUDE_KEYWORDS
+    )
+    # Recall-first: allow all software-like roles to AI.
+    # AI enforces strict US + 0-1 years + no clearance.
+    return has_position
+
+
+def validate_ai_matches(matches: list[dict[str, str]]) -> list[dict[str, str]]:
+    validated: list[dict[str, str]] = []
+    for item in matches:
+        title = str(item.get("title", "")).strip()
+        url = str(item.get("url", "")).strip()
+        if not title or not url:
+            continue
+        if should_reject_before_ai(title, url):
+            continue
+        if not has_software_signal(title, url):
+            continue
+        validated.append({"title": title, "url": url})
+    return dedupe_links(validated)
 
 
 def select_ai_candidates(link_list: list[dict[str, str]]) -> list[dict[str, str]]:
@@ -581,6 +673,7 @@ If a job does not clearly satisfy all three, reject it.
 Important:
 - Inputs were prefiltered for software-engineering-like, early-career-like, US-like signals.
 - You must still reject anything that is actually non-US, senior/staff/principal+, or requires security clearance.
+- Reject non-engineering functions, including but not limited to business, operations, HR/recruiting, finance, legal, sales, customer support, and marketing roles.
 
 Here is a list of candidate job links from {company_name}'s career page:
 {json.dumps(candidates)}
@@ -641,8 +734,12 @@ If no early-career roles found, return exactly: []"""
             url = str(item.get("url", "")).strip()
             if title and url:
                 out.append({"title": title, "url": url})
-        log(f"🤖 Gemini: {len(out)} early-career matches at {company_name}")
-        return dedupe_links(out), True, "gemini"
+        validated = validate_ai_matches(out)
+        dropped = len(out) - len(validated)
+        if dropped > 0:
+            log(f"🛡️ Gemini validation dropped {dropped} non-target matches at {company_name}")
+        log(f"🤖 Gemini: {len(validated)} early-career matches at {company_name}")
+        return validated, True, "gemini"
     except json.JSONDecodeError as exc:
         log(f"⚠️ Gemini parse failed at {company_name} ({exc})")
         return [], True, "gemini"
@@ -663,6 +760,13 @@ def openai_filter_jobs(
         log(f"❌ OpenAI unavailable, skipping OpenAI filtering at {company_name}")
         return [], False, "openai_unavailable"
 
+    candidates = select_ai_candidates(link_list)
+    if not candidates:
+        log(f"🧪 Prefilter: 0 AI candidates at {company_name}")
+        return [], True, "prefilter"
+
+    log(f"🧪 Prefilter: {len(candidates)} AI candidates at {company_name}")
+
     prompt = f"""You are a strict job filter.
 
 Goal:
@@ -677,9 +781,10 @@ If a job does not clearly satisfy all three, reject it.
 Important:
 - Inputs were prefiltered for software-engineering-like, early-career-like, US-like signals.
 - You must still reject anything that is actually non-US, senior/staff/principal+, or requires security clearance.
+- Reject non-engineering functions, including but not limited to business, operations, HR/recruiting, finance, legal, sales, customer support, and marketing roles.
 
 Here is a list of candidate job links from {company_name}'s career page:
-{json.dumps(link_list)}
+{json.dumps(candidates)}
 
 Return ONLY a valid JSON array, no markdown, no explanation.
 Format: [{{"title": "Job Title", "url": "https://..."}}]
@@ -707,8 +812,12 @@ If no early-career roles found, return exactly: []"""
             url = str(item.get("url", "")).strip()
             if title and url:
                 out.append({"title": title, "url": url})
-        log(f"🧠 OpenAI: {len(out)} early-career matches at {company_name}")
-        return dedupe_links(out), True, "openai"
+        validated = validate_ai_matches(out)
+        dropped = len(out) - len(validated)
+        if dropped > 0:
+            log(f"🛡️ OpenAI validation dropped {dropped} non-target matches at {company_name}")
+        log(f"🧠 OpenAI: {len(validated)} early-career matches at {company_name}")
+        return validated, True, "openai"
     except json.JSONDecodeError as exc:
         log(f"⚠️ OpenAI parse failed at {company_name} ({exc})")
         return [], True, "openai"
@@ -815,13 +924,30 @@ def build_email_html(matches: list[dict[str, str]]) -> str:
     """
 
 
+def parse_alert_recipients() -> list[str]:
+    """
+    Supports either:
+    - ALERT_EMAILS: comma/semicolon separated list
+    - ALERT_EMAIL: single email (legacy)
+    """
+    raw = os.getenv("ALERT_EMAILS", "").strip()
+    if not raw:
+        raw = os.getenv("ALERT_EMAIL", "").strip()
+    if not raw:
+        return []
+    parts = re.split(r"[;,]", raw)
+    recipients = [part.strip() for part in parts if part.strip()]
+    # Preserve order while removing duplicates.
+    return list(dict.fromkeys(recipients))
+
+
 def send_digest_email(matches: list[dict[str, str]]) -> None:
     if not matches:
         return
-    to_email = os.getenv("ALERT_EMAIL")
+    recipients = parse_alert_recipients()
     from_email = os.getenv("RESEND_FROM_EMAIL", "onboarding@resend.dev")
-    if not to_email:
-        log("❌ ALERT_EMAIL missing, cannot send email")
+    if not recipients:
+        log("❌ ALERT_EMAIL/ALERT_EMAILS missing, cannot send email")
         return
     subject = f"🎯 {len(matches)} New Early-Career Jobs Found — {datetime.now().strftime('%Y-%m-%d')}"
     html = build_email_html(matches)
@@ -829,12 +955,12 @@ def send_digest_email(matches: list[dict[str, str]]) -> None:
         resend.Emails.send(
             {
                 "from": from_email,
-                "to": [to_email],
+                "to": recipients,
                 "subject": subject,
                 "html": html,
             }
         )
-        log(f"📧 Email sent — {len(matches)} matches this run")
+        log(f"📧 Email sent to {len(recipients)} recipient(s) — {len(matches)} matches this run")
     except Exception as exc:
         log(f"❌ Email failed ({exc})")
 
