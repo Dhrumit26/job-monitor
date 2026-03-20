@@ -285,62 +285,151 @@ NON_US_LOCATION_REJECT_KEYWORDS = (
     "non-us",
     "non us",
     "not us",
-    "singapore",
-    "india",
+    # Global/worldwide signals
+    "worldwide",
+    "global",
+    "globally",
+    "international",
+    "internationally",
+    "remote - anywhere",
+    "remote anywhere",
+    "work from anywhere",
+    "anywhere in the world",
+    # Canada
     "canada",
     "toronto",
     "vancouver",
+    "montreal",
+    "ottawa",
+    "calgary",
+    "edmonton",
+    "winnipeg",
+    # UK / Ireland
     "united kingdom",
     "uk",
     "london",
     "england",
     "scotland",
     "wales",
+    "manchester",
+    "birmingham",
+    "edinburgh",
+    "dublin",
+    "ireland",
+    # Europe
     "europe",
     "eu ",
     "e.u.",
     "germany",
+    "berlin",
+    "munich",
+    "hamburg",
+    "frankfurt",
     "france",
-    "ireland",
+    "paris",
+    "lyon",
     "spain",
+    "madrid",
+    "barcelona",
     "italy",
+    "milan",
+    "rome",
     "sweden",
+    "stockholm",
     "norway",
+    "oslo",
     "denmark",
+    "copenhagen",
     "finland",
+    "helsinki",
     "switzerland",
+    "zurich",
+    "geneva",
     "belgium",
+    "brussels",
     "netherlands",
+    "amsterdam",
     "portugal",
+    "lisbon",
     "austria",
+    "vienna",
     "poland",
+    "warsaw",
     "czech",
+    "prague",
     "romania",
+    "bucharest",
+    # Asia-Pacific
+    "india",
+    "bangalore",
+    "bengaluru",
+    "mumbai",
+    "pune",
+    "hyderabad",
+    "delhi",
+    "chennai",
+    "kolkata",
+    "singapore",
     "australia",
+    "sydney",
+    "melbourne",
     "new zealand",
+    "auckland",
     "japan",
+    "tokyo",
+    "osaka",
     "south korea",
     "korea",
-    "israel",
-    "uae",
-    "dubai",
-    "saudi",
-    "qatar",
+    "seoul",
+    "china",
+    "beijing",
+    "shanghai",
+    "shenzhen",
+    "guangzhou",
     "hong kong",
     "taiwan",
-    "china",
+    "taipei",
     "malaysia",
+    "kuala lumpur",
     "indonesia",
+    "jakarta",
     "thailand",
+    "bangkok",
     "vietnam",
+    "ho chi minh",
+    "hanoi",
     "philippines",
+    "manila",
+    # Middle East
+    "israel",
+    "tel aviv",
+    "jerusalem",
+    "uae",
+    "dubai",
+    "abu dhabi",
+    "saudi",
+    "riyadh",
+    "qatar",
+    "doha",
+    # Latin America
     "brazil",
+    "sao paulo",
     "mexico",
+    "mexico city",
     "argentina",
+    "buenos aires",
     "chile",
+    "santiago",
     "colombia",
+    "bogota",
     "peru",
+    "lima",
+    # Africa
     "south africa",
+    "cape town",
+    "johannesburg",
+    "nairobi",
+    # Regional codes
     "emea",
     "apac",
     "latam",
@@ -663,15 +752,21 @@ def gemini_filter_jobs(
 
 Goal:
 Select ONLY jobs that match ALL conditions:
-1) Location is in the United States (or remote within US)
-2) Early-career role around 0-1 years experience
-3) No security clearance required
+1) Location is clearly in the United States, or explicitly "Remote" restricted to US only.
+2) Early-career role around 0-1 years experience.
+3) No security clearance required.
+
+Location rules (most important — when in doubt, REJECT):
+- ACCEPT: "New York", "San Francisco", "Remote (US)", "Remote - US only", "United States", specific US cities.
+- REJECT: Any non-US country, city, or region (Canada, UK, India, Europe, Singapore, Australia, etc.).
+- REJECT: "Worldwide", "Global", "International", "Remote - Anywhere", "Work from anywhere".
+- REJECT: "Remote" with no US restriction when the company is known to be non-US.
+- DEFAULT: If location is ambiguous, not mentioned, or unclear — REJECT. Do not guess.
 
 Use the title, URL text, and any location cues available in the input.
-If a job does not clearly satisfy all three, reject it.
 
 Important:
-- Inputs were prefiltered for software-engineering-like, early-career-like, US-like signals.
+- Inputs were prefiltered for software-engineering-like, early-career-like signals.
 - You must still reject anything that is actually non-US, senior/staff/principal+, or requires security clearance.
 - Reject non-engineering functions, including but not limited to business, operations, HR/recruiting, finance, legal, sales, customer support, and marketing roles.
 
@@ -771,15 +866,21 @@ def openai_filter_jobs(
 
 Goal:
 Select ONLY jobs that match ALL conditions:
-1) Location is in the United States (or remote within US)
-2) Early-career role around 0-1 years experience
-3) No security clearance required
+1) Location is clearly in the United States, or explicitly "Remote" restricted to US only.
+2) Early-career role around 0-1 years experience.
+3) No security clearance required.
+
+Location rules (most important — when in doubt, REJECT):
+- ACCEPT: "New York", "San Francisco", "Remote (US)", "Remote - US only", "United States", specific US cities.
+- REJECT: Any non-US country, city, or region (Canada, UK, India, Europe, Singapore, Australia, etc.).
+- REJECT: "Worldwide", "Global", "International", "Remote - Anywhere", "Work from anywhere".
+- REJECT: "Remote" with no US restriction when the company is known to be non-US.
+- DEFAULT: If location is ambiguous, not mentioned, or unclear — REJECT. Do not guess.
 
 Use the title, URL text, and any location cues available in the input.
-If a job does not clearly satisfy all three, reject it.
 
 Important:
-- Inputs were prefiltered for software-engineering-like, early-career-like, US-like signals.
+- Inputs were prefiltered for software-engineering-like, early-career-like signals.
 - You must still reject anything that is actually non-US, senior/staff/principal+, or requires security clearance.
 - Reject non-engineering functions, including but not limited to business, operations, HR/recruiting, finance, legal, sales, customer support, and marketing roles.
 
