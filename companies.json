@@ -28,7 +28,7 @@
   { "name": "Google", "url": "https://careers.google.com/jobs/results" },
   { "name": "Meta", "url": "https://www.metacareers.com/jobs" },
   { "name": "Amazon", "url": "https://www.amazon.jobs/en/search" },
-  { "name": "Microsoft", "url": "https://jobs.careers.microsoft.com/global/en/search" },
+  { "name": "Microsoft", "url": "https://apply.careers.microsoft.com/careers?query=software+engineer&start=0&location=United+States%2C+Multiple+Locations%2C+Multiple+Locations&pid=1970393556746085&sort_by=relevance&filter_include_remote=1" },
   { "name": "Apple", "url": "https://jobs.apple.com/en-us/search?location=united-states-USA" },
   { "name": "Netflix", "url": "https://explore.jobs.netflix.net/careers" },
   { "name": "Visa", "url": "https://corporate.visa.com/en/jobs/" },
